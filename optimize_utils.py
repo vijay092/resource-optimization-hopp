@@ -11,6 +11,18 @@ import matplotlib.pyplot as plt
 import time
 
 
+"""
+
+
+Units:
+
+Power := kW
+
+
+
+"""
+
+
 def optimize(
     T,
     max_wind,
@@ -20,54 +32,52 @@ def optimize(
     battery_storage_hours,
     stack_life_hrs,
     cost_year,
-    elec_avg_consumption_kWhprkg,
     pem_cost_case="Mod 18",
 ):
     """This function finds the best sizing for wind,
     solar, battery, electrolyzer."""
 
     model = ConcreteModel()
+    max_electrolyzer = max_battery + max_wind + max_solar
 
     # =========================== Wind stuff ===========================
     model.wind_size = Var(
-        [i for i in range(T)],
+        [0],
         bounds=(1e-2, max_wind),
     )
 
     # =========================== Solar stuff ===========================
     model.solar_size = Var(
-        [i for i in range(T)],
+        [0],
         bounds=(1e-2, max_solar),
     )
 
     # =========================== Battery stuff ===========================
 
     model.battery_size = Var(
-        [i for i in range(T)],
+        [0],
         bounds=(1e-2, max_battery),
     )
 
     # =========================== Electrolyzer stuff ===========================
-    model.electrolyzer_size = Var(
-        [i for i in range(T)],
-        bounds=(1e-2, max_electrolyzer),
-    )
+    # model.electrolyzer_size = Var(
+    #     [0],
+    #     bounds=(1e-3, max_electrolyzer),
+    # )
 
     model.h2_flow_rate = Var(
-        [i for i in range(T)],
-        bounds=(1e-2, 1e8),
+        [0],
+        bounds=(0.3874 * max_electrolyzer / 500, 1e8),
     )
 
-    model.num = Var([0], bounds=(1e-2, 1e8))
-    model.den = Var([0], bounds=(1e-2, 1e8))
+    model.num = Var([0], bounds=(0, 1e19))
 
     def physical_constraint_AC(model):
-
-        
         water_feedstock_per_year = (
-            water_cost * water_usage_gal_pr_kg_h2 * sum(model.h2_flow_rate)
+            water_cost * water_usage_gal_pr_kg_h2 * model.h2_flow_rate[0]
         )
         electrolyzer_refurbishment_cost_USD = np.zeros(plant_life)
+        elec_avg_consumption_kWhprkg = eol_eff_kWh_pr_kg[-4]
 
         # degradation only impacts stack replacement cost if time between replacement is different by a year!
         refturb_period = int(np.floor(stack_life_hrs / (24 * 365)))
@@ -76,17 +86,17 @@ def optimize(
         pem_capex_kW = year_costs[pem_cost_case + ": PEM CapEx [$/kW]"]
 
         # Renewable Energy Plant CapEx
-        wind_CapEx_USD = (model.wind_size * 1000) * year_costs[
+        wind_CapEx_USD = (model.wind_size[0] * 1000) * year_costs[
             "Wind CapEx [$/kW]"
         ]  # wind_capex_kW
-        solar_CapEx_USD = (model.solar_size * 1000) * year_costs[
+        solar_CapEx_USD = (model.solar_size[0] * 1000) * year_costs[
             "Solar CapEx [$/kW]"
         ]  # solar_capex_kW
         # doube check below
         battery_CapEx_kW = (
             year_costs["Battery CapEx [$/kWh]"] * battery_storage_hours
         ) + year_costs["Battery CapEx [$/kW]"]
-        battery_CapEx_USD = (model.battery_size * 1000) * battery_CapEx_kW
+        battery_CapEx_USD = (model.battery_size[0] * 1000) * battery_CapEx_kW
 
         # Electrolyzer CapEx - only changes on cost case and cost year!
         electrolyzer_CapEx_USD = (
@@ -96,10 +106,10 @@ def optimize(
         )
 
         # Renewable Energy Plant Fixed OpEx (has to be paid annually)
-        wind_OpEx_USD = (model.wind_size * 1000) * year_costs[
+        wind_OpEx_USD = (model.wind_size[0] * 1000) * year_costs[
             "Wind OpEx [$/kW-year]"
         ]  # *wind_opex_kWyr
-        solar_OpEx_USD = (model.solar_size * 1000) * year_costs[
+        solar_OpEx_USD = (model.solar_size[0] * 1000) * year_costs[
             "Solar OpEx [$/kW-year]"
         ]  #
         battery_OpEx_USD = battery_opex_perc * battery_CapEx_USD
@@ -119,7 +129,7 @@ def optimize(
         hydrogen_storage_CapEx_kg = (
             17.164317691925053  # [$/kg] TODO: update with cost scaling
         )
-        hydrogen_storage_CapEx_USD = hydrogen_storage_CapEx_kg * sum(model.h2_flow_rate)
+        hydrogen_storage_CapEx_USD = hydrogen_storage_CapEx_kg * model.h2_flow_rate[0]
 
         # # 2) Hydrogen Transport: NOTE: not included right now
         # elec_price = (
@@ -154,26 +164,32 @@ def optimize(
 
         y = np.arange(0, plant_life, 1)
         denom = (1 + discount_rate) ** y
-        OpEx = (annual_OpEx / denom) + (electrolyzer_refurbishment_cost_USD / denom)
-        num = total_CapEx + np.sum(OpEx)
+        OpEx = 0
+        for i, d in enumerate(denom):
+            OpEx += (annual_OpEx / d) + (electrolyzer_refurbishment_cost_USD[i] / d)
+        num = total_CapEx + OpEx
         return model.num[0] == num
 
     def physical_constraint_F_tot(model):
         """Denominator function"""
         F_tot = 0
-        for t in range(T):
-            F_tot = F_tot + (0.0145 * model.p_el[t] + 0.3874 * max_electrolyzer / 500)
-        return model.den[0] == F_tot
+        F_tot = F_tot + (
+            0.0145 * (model.wind_size[0] + model.solar_size[0] + model.battery_size[0])
+            + 0.3874 * max_electrolyzer / 500
+        )
+        return model.h2_flow_rate[0] == F_tot * 8760
 
     def obj(model):
-        return model.num[0] / model.den[0]
+        return model.num[0] - 1e-3 * model.h2_flow_rate[0]
 
     model.physical_constraints = ConstraintList()
     model.physical_constraints.add(physical_constraint_F_tot(model))
     model.physical_constraints.add(physical_constraint_AC(model))
 
     model.objective = Objective(expr=obj(model), sense=minimize)
-    solver = SolverFactory("cplex")
-    results = solver.solve(model)
+    solver = SolverFactory("cbc")
+    results = solver.solve(
+        model,
+    )
 
-    return results
+    return model, results
