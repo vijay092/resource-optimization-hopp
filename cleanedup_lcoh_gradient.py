@@ -210,6 +210,7 @@ avg_time_between_replacement = 80000
 h2_storage_capacity_kg = electrolyzer_size_MW * h2_bol[-1]
 kWh_pr_kg_avg = eol_eff_kWh_pr_kg[-4]
 
+
 # typically h2_storage_capacity_kg is sized in a similar fashiong as size_hydrogen_storage,
 # but the hourly hydrogen profile is needed. Generally, its auto-sized
 
