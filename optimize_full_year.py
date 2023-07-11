@@ -29,66 +29,79 @@ def optimize(
 
     else:
         max_solar = renewable_powers["solar"].max()
-        max_wind = renewable_powers["solar"].max()
-        max_battery = renewable_powers["solar"].max()
+        max_wind = renewable_powers["wind"].max()
+        max_battery = renewable_powers["battery"].max()
 
     solar_power = renewable_powers["solar"]
     wind_power = renewable_powers["wind"]
     battery_power = renewable_powers["battery"]
 
-    # Of the privided renewable generation, solve for the optimal powers
-    # Powers that you need to solve for:
+    # Of the provided renewable generation, solve for the optimal powers
     model.used_wind_power_mw = Var(
         [i for i in range(T)],
         bounds=(6, max_wind),
+        initialize=10,
     )
 
     model.used_solar_power_mw = Var(
         [i for i in range(T)],
         bounds=(6, max_solar),
+        initialize=10,
     )
 
     model.used_battery_power_mw = Var(
         [i for i in range(T)],
-        bounds=(6, max_solar),
+        bounds=(6, max_battery),
+        initialize=10,
     )
 
     model.solar_size_mw = Var(
         [0],
-        bounds=(6, max_solar),
+        bounds=(0, max_solar),
+        initialize=10,
     )
 
     model.wind_size_mw = Var(
         [0],
-        bounds=(6, max_wind),
+        bounds=(0, max_wind),
+        initialize=10,
     )
 
     model.battery_size_mw = Var(
         [0],
-        bounds=(6, max_battery),
+        bounds=(0, max_battery),
+        initialize=10,
     )
 
-    # h2 flow rate form the linear model
-    model.h2_flow_rate_kg_per_hr = Var(
+    model.electrolyzer_input_mw = Var(
         [i for i in range(T)],
         bounds=(0, 1e8),
+        initialize=10,
     )
 
     # Aggregate cost
-    model.annualized_cost_dlr = Var([0], bounds=(0, 1e8))
+    model.annualized_cost_dlr = Var(
+        [0],
+        bounds=(0, 1e8),
+        initialize=10,
+    )
 
     # Aggregate h2 production
-    model.h2_kg = Var([0], bounds=(0, 1e8))
+    model.h2_kg = Var(
+        [0],
+        bounds=(0, 1e8),
+        initialize=10,
+    )
 
     # Parameter for linearization
-    model.eps = Param(initialize=1, mutable=True)
+    model.eps = Param(initialize=10, mutable=True)
 
     def obj(model):
-        return model.annualized_cost[0] - model.eps * model.h2_kg[0]
+        return model.annualized_cost_dlr[0] - model.eps * model.h2_kg[0]
 
     def physical_constraint_AC(model):
         # Need to find aggregate values for h2:
-        h2_prod_one_yr = model.h2_kg
+        h2_prod_one_yr = model.h2_kg[0]
 
         # LCOH calculaitons
         water_feedstock_per_year = (
@@ -110,7 +123,7 @@ def optimize(
         solar_CapEx_USD = (model.solar_size_mw[0] * 1000) * year_costs[
             "Solar CapEx [$/kW]"
         ]  # solar_capex_kW
-        # doube check below
+
         battery_CapEx_kW = (
             year_costs["Battery CapEx [$/kWh]"] * battery_storage_hours
         ) + year_costs["Battery CapEx [$/kW]"]
@@ -149,14 +162,6 @@ def optimize(
         )
         hydrogen_storage_CapEx_USD = hydrogen_storage_CapEx_kg * model.h2_kg[0]
 
-        # # 2) Hydrogen Transport: NOTE: not included right now
-        # elec_price = (
-        #     price_inc_per_year * (cost_year - ref_year)
-        # ) + average_grid_retail_rate  # [$/kWh]
-        # elec_usage_for_h2_transmission = 0.5892
-        # h2_trans_CapEx_USD = 0  # NOTE: not included right now
-        # h2_trans_OpEx_USD = 0
-
         # CapEx costs in [$]
         hybrid_plant_CapEx_USD = wind_CapEx_USD + solar_CapEx_USD + battery_CapEx_USD
         electrolyzer_and_BOS_CapEx_USD = (
@@ -187,7 +192,7 @@ def optimize(
             OpEx += (annual_OpEx / d) + (electrolyzer_refurbishment_cost_USD[i] / d)
         num = total_CapEx + OpEx
 
-        return num
+        return model.annualized_cost_dlr[0] == num
 
     def physical_constraint_F_tot(model):
         """Denominator"""
@@ -207,53 +212,60 @@ def optimize(
             model.used_wind_power_mw[t]
             + model.used_solar_power_mw[t]
             + model.used_battery_power_mw[t]
-        )  == model.electrolyzer_input_mw[t]
+        ) == model.electrolyzer_input_mw[t]
 
-    def solar_constraint(model,t):
-        """Used power should be less than the given power. """
+    def solar_power_constraint(model, t):
+        """Used power should be less than the given power."""
         return model.used_solar_power_mw[t] <= solar_power[t]
 
-    def wind_constraint(model,t):
-        """Used power should be less than the given power. """
+    def wind_power_constraint(model, t):
+        """Used power should be less than the given power."""
         return model.used_wind_power_mw[t] <= wind_power[t]
 
-    def battery_constraint(model,t):
-        """Used power should be less than the given power. """
+    def battery_power_constraint(model, t):
+        """Used power should be less than the given power."""
         return model.used_battery_power_mw[t] <= battery_power[t]
 
+    def solar_size_constraint(model, t):
+        """Instead of imposing a max constarint, use this trick."""
+        return model.solar_size_mw[0] >= model.used_solar_power_mw[t]
+
+    def wind_size_constraint(model, t):
+        """Instead of imposing a max constarint, use this trick."""
+        return model.wind_size_mw[0] >= model.used_wind_power_mw[t]
+
+    def battery_size_constraint(model, t):
+        """Instead of imposing a max constarint, use this trick."""
+        return model.battery_size_mw[0] >= model.used_battery_power_mw[t]
 
     model.pwr_constraints = ConstraintList()
-    model.safety_constraints = ConstraintList()
-    model.switching_constraints = ConstraintList()
     model.physical_constraints = ConstraintList()
 
     for t in range(T):
-        model.pwr_constraints.add(power_constraint(model, t))
+        model.pwr_constraints.add(load_balance_constraint(model, t))
+        # model.pwr_constraints.add(solar_power_constraint(model, t))
+        # model.pwr_constraints.add(wind_power_constraint(model, t))
+        # model.pwr_constraints.add(battery_power_constraint(model, t))
+        # model.pwr_constraints.add(solar_size_constraint(model, t))
+        # model.pwr_constraints.add(wind_size_constraint(model, t))
+        # model.pwr_constraints.add(battery_size_constraint(model, t))
+
     model.physical_constraints.add(physical_constraint_F_tot(model))
     model.physical_constraints.add(physical_constraint_AC(model))
+
     model.objective = Objective(expr=obj(model), sense=minimize)
     eps = 10
-    solver = SolverFactory(
-        "cbc", executable="/Users/svijaysh/CCTA_2023/cbc.exe", solver_io="python"
-    )
+    solver = SolverFactory("cbc")
     j = 1
     while eps > 1e-3:
         start = time.process_time()
         results = solver.solve(model)
-        print("time to solve", time.process_time() - start)
-        model.eps = value(model.AC[0] / model.F_tot[0])  # optimal value
-        eps = model.AC[0].value - model.eps.value * model.F_tot[0].value
+        model.eps = value(
+            model.annualized_cost_dlr[0] / model.h2_kg[0]
+        )  # optimal value
+        eps = (
+            model.annualized_cost_dlr[0].value - model.eps.value * model.h2_kg[0].value
+        )
         j = j + 1
 
-    P = np.array([model.p[i].value for i in range(T)])
-
-    return (
-        P_tot_opt,
-        P_,
-        H2f,
-        I_,
-        Tr,
-        P_wind_t,
-        model.AC[0].value,
-        model.F_tot[0].value,
-    )
+    return model
