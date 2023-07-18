@@ -11,6 +11,10 @@ import matplotlib.pyplot as plt
 import time
 
 
+# Technique:
+
+# whenever constants come - add t 
+
 def optimize(
     T,
     renewable_powers,
@@ -39,71 +43,90 @@ def optimize(
     # Of the provided renewable generation, solve for the optimal powers
     model.used_wind_power_mw = Var(
         [i for i in range(T)],
-        bounds=(6, max_wind),
+        bounds=(1e-2, 1e6),
         initialize=10,
     )
 
     model.used_solar_power_mw = Var(
         [i for i in range(T)],
-        bounds=(6, max_solar),
+        bounds=(1e-2, 1e8),
         initialize=10,
     )
 
     model.used_battery_power_mw = Var(
         [i for i in range(T)],
-        bounds=(6, max_battery),
+        bounds=(1e-2, 1e8),
         initialize=10,
     )
 
     model.solar_size_mw = Var(
         [0],
-        bounds=(0, max_solar),
+        bounds=(1e-2, 1e8),
         initialize=10,
     )
 
     model.wind_size_mw = Var(
         [0],
-        bounds=(0, max_wind),
+        bounds=(1e-2, 1e8),
         initialize=10,
     )
 
     model.battery_size_mw = Var(
         [0],
-        bounds=(0, max_battery),
+        bounds=(1e-2, 1e8),
         initialize=10,
     )
 
     model.electrolyzer_input_mw = Var(
         [i for i in range(T)],
-        bounds=(0, 1e8),
+        bounds=(1e-2, 1e8),
         initialize=10,
     )
 
     # Aggregate cost
     model.annualized_cost_dlr = Var(
         [0],
-        bounds=(0, 1e8),
+        bounds=(1e-2, 1e8),
         initialize=10,
     )
 
     # Aggregate h2 production
     model.h2_kg = Var(
         [0],
-        bounds=(0, 1e8),
+        bounds=(1e-2, 1e8),
+        initialize=10,
+    )
+
+    model.electrolyzer_size_mw = Var(
+        [0],
+        bounds=(1e-2, 1e8),
         initialize=10,
     )
 
     # Parameter for linearization
-    model.eps = Param(initialize=10, mutable=True)
+
+    model.eps = Param(initialize=1, mutable=True)
+
+
+    # Charnes cooper:
+
+    model.t = Var(
+        [0],
+        bounds=(1e-2, 1e8),
+        initialize=10,
+    )
+
+
+
 
     def obj(model):
-        return model.annualized_cost_dlr[0] - model.eps * model.h2_kg[0]
+        return model.annualized_cost_dlr[0] + model.eps * model.h2_kg[0]
 
     def physical_constraint_AC(model):
         # Need to find aggregate values for h2:
         h2_prod_one_yr = model.h2_kg[0]
 
-        # LCOH calculaitons
+        # LCOH calculations
         water_feedstock_per_year = (
             water_cost * water_usage_gal_pr_kg_h2 * h2_prod_one_yr
         )
@@ -130,8 +153,17 @@ def optimize(
         battery_CapEx_USD = (model.battery_size_mw[0] * 1000) * battery_CapEx_kW
 
         # Electrolyzer CapEx - only changes on cost case and cost year!
+        electrolyzer_FOpEx_USD = (
+            model.electrolyzer_size_mw[0] * 1000
+        ) * pem_opex_kWyr  # [$/year]
+        # Electrolyzer BOS Component costs - depend on electrolyzer installed capacity
+        desal_CapEx_USD = desal_capex_MW * model.electrolyzer_size_mw[0]
+        desal_OpEx_USD = desal_opex_MWyr * model.electrolyzer_size_mw[0]
+        compressor_capex_USD = compressor_capex_kW * (
+            model.electrolyzer_size_mw[0] * 1000
+        )
         electrolyzer_CapEx_USD = (
-            (electrolyzer_size_MW * 1000)
+            (model.electrolyzer_size_mw[0] * 1000)
             * pem_capex_kW
             * (1 + indirect_electrolyzer_costs_percent)
         )
@@ -151,9 +183,11 @@ def optimize(
         )  # [$/kg-H2]
 
         # Stack replacement costs - only paid in year of replacement
-        electrolyzer_refurbishment_cost_USD[
-            refturb_period:plant_life:refturb_period
-        ] = (stack_rep_perc * electrolyzer_CapEx_USD)
+
+        # for i in range(len(electrolyzer_refurbishment_cost_USD)):
+        #     electrolyzer_refurbishment_cost_USD[refturb_period + i * refturb_period] = (
+        #         stack_rep_perc * electrolyzer_CapEx_USD
+        #     )
 
         # Hydrogen Supplemental Costs - depend on electrolyzer performance!
         # 1) Hydrogen Storage:
@@ -188,9 +222,17 @@ def optimize(
         y = np.arange(0, plant_life, 1)
         denom = (1 + discount_rate) ** y
         OpEx = 0
+
         for i, d in enumerate(denom):
-            OpEx += (annual_OpEx / d) + (electrolyzer_refurbishment_cost_USD[i] / d)
+            if (i + 1) % (refturb_period) == 0:
+                refurb = stack_rep_perc * electrolyzer_CapEx_USD
+            else:
+                refurb = 0
+
+            OpEx += (annual_OpEx / d) + (refurb / d)
         num = total_CapEx + OpEx
+
+        num = num - 1557220007051.7997997
 
         return model.annualized_cost_dlr[0] == num
 
@@ -201,10 +243,10 @@ def optimize(
             F_tot = (
                 F_tot
                 + 0.0145 * (model.electrolyzer_input_mw[t])
-                + 0.3874 * electrolyzer_size_MW / 0.5
+                + 0.3874 * model.electrolyzer_size_mw[0] / 0.5
             )
 
-        return model.h2_kg[0] == F_tot
+        return model.h2_kg[0] == F_tot / (16555294.323648022)
 
     def load_balance_constraint(model, t):
         """Input to the electrolyzer"""
@@ -228,7 +270,6 @@ def optimize(
 
     def solar_size_constraint(model, t):
         """Instead of imposing a max constarint, use this trick."""
-        ''' Account for efficiency'''
         return model.solar_size_mw[0] >= model.used_solar_power_mw[t]
 
     def wind_size_constraint(model, t):
@@ -238,6 +279,10 @@ def optimize(
     def battery_size_constraint(model, t):
         """Instead of imposing a max constarint, use this trick."""
         return model.battery_size_mw[0] >= model.used_battery_power_mw[t]
+
+    def electrolyzer_size_constraint(model, t):
+        """Instead of imposing a max constarint, use this trick."""
+        return model.electrolyzer_size_mw[0] >= model.electrolyzer_input_mw[t]
 
     model.pwr_constraints = ConstraintList()
     model.physical_constraints = ConstraintList()
@@ -250,23 +295,26 @@ def optimize(
         model.pwr_constraints.add(solar_size_constraint(model, t))
         model.pwr_constraints.add(wind_size_constraint(model, t))
         model.pwr_constraints.add(battery_size_constraint(model, t))
+        model.pwr_constraints.add(electrolyzer_size_constraint(model, t))
 
     model.physical_constraints.add(physical_constraint_F_tot(model))
     model.physical_constraints.add(physical_constraint_AC(model))
 
     model.objective = Objective(expr=obj(model), sense=minimize)
     eps = 10
-    solver = SolverFactory("cbc")
+    solver = SolverFactory("ipopt")
     j = 1
-    while eps > 1e-3:
+    while eps > 1e-5:
         start = time.process_time()
         results = solver.solve(model)
         model.eps = value(
             model.annualized_cost_dlr[0] / model.h2_kg[0]
         )  # optimal value
+
         eps = (
             model.annualized_cost_dlr[0].value - model.eps.value * model.h2_kg[0].value
         )
+        print("epsilon", eps)
         j = j + 1
 
     return model
