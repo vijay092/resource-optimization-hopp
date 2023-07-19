@@ -13,7 +13,8 @@ import time
 
 # Technique:
 
-# whenever constants come - add t 
+# whenever constants come
+
 
 def optimize(
     T,
@@ -86,14 +87,14 @@ def optimize(
     # Aggregate cost
     model.annualized_cost_dlr = Var(
         [0],
-        bounds=(1e-2, 1e8),
+        bounds=(1e-2, 1e15),
         initialize=10,
     )
 
     # Aggregate h2 production
     model.h2_kg = Var(
         [0],
-        bounds=(1e-2, 1e8),
+        bounds=(1e-2, 1e15),
         initialize=10,
     )
 
@@ -105,22 +106,16 @@ def optimize(
 
     # Parameter for linearization
 
-    model.eps = Param(initialize=1, mutable=True)
-
-
     # Charnes cooper:
 
     model.t = Var(
         [0],
-        bounds=(1e-2, 1e8),
+        bounds=(1e-9, 1e8),
         initialize=10,
     )
 
-
-
-
     def obj(model):
-        return model.annualized_cost_dlr[0] + model.eps * model.h2_kg[0]
+        return model.annualized_cost_dlr[0]  # + model.eps * model.h2_kg[0]
 
     def physical_constraint_AC(model):
         # Need to find aggregate values for h2:
@@ -180,14 +175,9 @@ def optimize(
         # Electrolyzed Variable OpEx costs [$/kg-H2] (treated like a feedstock)
         electrolyzer_VOpEx_USD = (
             pem_VOM * elec_avg_consumption_kWhprkg / 1000
-        )  # [$/kg-H2]
-
-        # Stack replacement costs - only paid in year of replacement
-
-        # for i in range(len(electrolyzer_refurbishment_cost_USD)):
-        #     electrolyzer_refurbishment_cost_USD[refturb_period + i * refturb_period] = (
-        #         stack_rep_perc * electrolyzer_CapEx_USD
-        #     )
+        ) * model.t[
+            0
+        ]  # [$/kg-H2]
 
         # Hydrogen Supplemental Costs - depend on electrolyzer performance!
         # 1) Hydrogen Storage:
@@ -204,6 +194,7 @@ def optimize(
             + compressor_capex_USD
             + hydrogen_storage_CapEx_USD
         )
+
         total_CapEx = (
             hybrid_plant_CapEx_USD + electrolyzer_and_BOS_CapEx_USD
         )  # + h2_trans_CapEx_USD
@@ -232,7 +223,7 @@ def optimize(
             OpEx += (annual_OpEx / d) + (refurb / d)
         num = total_CapEx + OpEx
 
-        num = num - 1557220007051.7997997
+        # print(num)
 
         return model.annualized_cost_dlr[0] == num
 
@@ -246,7 +237,7 @@ def optimize(
                 + 0.3874 * model.electrolyzer_size_mw[0] / 0.5
             )
 
-        return model.h2_kg[0] == F_tot / (16555294.323648022)
+        return model.h2_kg[0] == F_tot  # / (16555294.323648022)
 
     def load_balance_constraint(model, t):
         """Input to the electrolyzer"""
@@ -258,15 +249,15 @@ def optimize(
 
     def solar_power_constraint(model, t):
         """Used power should be less than the given power."""
-        return model.used_solar_power_mw[t] <= solar_power[t]
+        return model.used_solar_power_mw[t] <= solar_power[t] * model.t[0]
 
     def wind_power_constraint(model, t):
         """Used power should be less than the given power."""
-        return model.used_wind_power_mw[t] <= wind_power[t]
+        return model.used_wind_power_mw[t] <= wind_power[t] * model.t[0]
 
     def battery_power_constraint(model, t):
         """Used power should be less than the given power."""
-        return model.used_battery_power_mw[t] <= battery_power[t]
+        return model.used_battery_power_mw[t] <= battery_power[t] * model.t[0]
 
     def solar_size_constraint(model, t):
         """Instead of imposing a max constarint, use this trick."""
@@ -284,6 +275,9 @@ def optimize(
         """Instead of imposing a max constarint, use this trick."""
         return model.electrolyzer_size_mw[0] >= model.electrolyzer_input_mw[t]
 
+    def charnes_cooper_eq(model):
+        return model.h2_kg[0] == 1
+
     model.pwr_constraints = ConstraintList()
     model.physical_constraints = ConstraintList()
 
@@ -296,25 +290,24 @@ def optimize(
         model.pwr_constraints.add(wind_size_constraint(model, t))
         model.pwr_constraints.add(battery_size_constraint(model, t))
         model.pwr_constraints.add(electrolyzer_size_constraint(model, t))
-
     model.physical_constraints.add(physical_constraint_F_tot(model))
     model.physical_constraints.add(physical_constraint_AC(model))
-
+    model.physical_constraints.add(charnes_cooper_eq(model))
     model.objective = Objective(expr=obj(model), sense=minimize)
     eps = 10
     solver = SolverFactory("ipopt")
-    j = 1
-    while eps > 1e-5:
-        start = time.process_time()
-        results = solver.solve(model)
-        model.eps = value(
-            model.annualized_cost_dlr[0] / model.h2_kg[0]
-        )  # optimal value
+    results = solver.solve(model)
+    # while eps > 1e-5:
+    #     start = time.process_time()
+    #     results = solver.solve(model)
+    #     model.eps = value(
+    #         model.annualized_cost_dlr[0] / model.h2_kg[0]
+    #     )  # optimal value
 
-        eps = (
-            model.annualized_cost_dlr[0].value - model.eps.value * model.h2_kg[0].value
-        )
-        print("epsilon", eps)
-        j = j + 1
+    #     eps = (
+    #         model.annualized_cost_dlr[0].value - model.eps.value * model.h2_kg[0].value
+    #     )
+    #     print("epsilon", eps)
+    #     j = j + 1
 
     return model
