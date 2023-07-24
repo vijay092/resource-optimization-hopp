@@ -1,9 +1,8 @@
-# Resource Optimization for HOPP
+**Problem Description:**
 
-This problem deals with the size optimization of the energy resources such as wind, solar and battery. Given some historical wind, solar, battery data for a year, we find the best site sizes in order to minimize the levelized cost of hydrogen (LCOH).
+This problem involves optimizing the sizes of energy resources (wind, solar, battery) to minimize the levelized cost of hydrogen (LCOH). The given data includes historical wind, solar, and battery information for a year. The goal is to find the best site sizes that minimize the LCOH. The optimization formulation is as follows:
 
-The optimization formulation is as under:
-
+Minimize:
 ```math
 \begin{align}
   \quad \min_{ \mathcal S_{wind}, \mathcal S_{solar}, \mathcal S_{bat}, \mathcal P_{wind}, \mathcal P_{solar}, \mathcal P_{bat}} & \frac{AC^{tot}}{F^{tot}} \\
@@ -16,10 +15,21 @@ The optimization formulation is as under:
 \end{align}
 ```
 
-\$\mathcal P\$ indicates used powers and \$\mathcal S\$ indicates sizes of the individual energy sources. 
+where:
+- \$\mathcal{P}\$ indicates used powers.
+- \$\mathcal{S}\$ indicates sizes of individual energy sources.
 
-Code deets:
+**Code Details:**
 
-1. Use `optimize_fractional.py` for the nonlinear version solved using `ipopt`.
-2. Use `optimize_linear.py` for the linearized version solved using `cbc` (solves in 15s for a whole year).
-3. `run_optimization.ipynb` for the example notebook.
+The problem can be approached using two different code files, which are provided:
+
+1. `optimize_fractional.py`: This file contains the nonlinear version of the problem, which is solved using the `ipopt` solver.
+
+2. `optimize_linear.py`: This file contains the linearized version of the problem, which is solved using the `cbc` solver. This solver is faster and can handle the optimization for a whole year in approximately 15 seconds.
+
+3. `run_optimization.ipynb`: This is an example notebook that demonstrates how to run the optimization using the provided code files.
+
+**Note:**
+Please ensure you have the necessary libraries and dependencies installed to run the optimization code successfully. Also, make sure to set up the correct input data for the historical wind, solar, and battery information for a year before running the optimization.
+
+To summarize, this problem deals with optimizing energy resource sizes to minimize the levelized cost of hydrogen (LCOH), and you can use the provided code files (`optimize_fractional.py` or `optimize_linear.py`) based on your specific requirements and computational capabilities.
