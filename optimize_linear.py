@@ -230,6 +230,8 @@ def optimize(
             + model.used_battery_power_mw[t]
         ) == model.electrolyzer_input_mw[t]
 
+    # min elec power should be 4MW (1/17 of 10% min)
+
     def solar_power_constraint(model, t):
         """Used power should be less than the given power."""
         return model.used_solar_power_mw[t] <= solar_power[t]  # * model.t[0]
